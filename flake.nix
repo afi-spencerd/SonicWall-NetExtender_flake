@@ -11,10 +11,28 @@
     flake-parts.lib.mkFlake { inherit inputs; } {
       systems = [ "x86_64-linux" ];
 
+      flake.overlays.default = final: _prev: {
+        sonicwall-netextender = final.callPackage ./nix/package.nix { };
+      };
+
       perSystem =
-        { pkgs, ... }:
         {
+          system,
+          pkgs,
+          config,
+          ...
+        }:
+        {
+          # NetExtender is proprietary; evaluate nixpkgs with unfree allowed.
+          _module.args.pkgs = import inputs.nixpkgs {
+            inherit system;
+            config.allowUnfree = true;
+          };
+
           formatter = pkgs.nixfmt;
+
+          packages.netextender = pkgs.callPackage ./nix/package.nix { };
+          packages.default = config.packages.netextender;
 
           devShells.default = pkgs.mkShell {
             name = "sonicwall-netextender-dev";
