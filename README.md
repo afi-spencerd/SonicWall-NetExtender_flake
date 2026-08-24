@@ -125,6 +125,57 @@ $ nix fmt            # format with nixfmt (RFC 166)
    GUI `buildInputs` in the package accordingly.
 4. `nix flake check`.
 
+## Known issues
+
+### SAML logon stalls on the appliance's "session status" page
+
+**Symptom.** The browser opens, you complete the IdP login, and you land on
+`https://<appliance>:4433/SonicWall-SSLVPN/sad` — but the client never
+connects. `/var/log/SonicWall/NetExtender/neservice.log` shows it stuck in
+`StateNeedSamlInfo`, polling once per second and never reaching
+`StateLogonSuccess`.
+
+**Workaround.** Reload that page (<kbd>Ctrl</kbd>+<kbd>R</kbd>). The logon
+completes within a second.
+
+**Why.** The SAML result is handed back server-side, not through the browser:
+`NEService` polls `/__api__/v1/logon/<id>/status` until the appliance reports
+the logon finished, and the appliance finalizes it when it serves the `sad`
+URL. On affected SonicOS firmware the first request doesn't finalize the
+logon, but a second one does — hence the reload. The page itself is only a
+"you're connected, close this tab" screen (its JS makes no API calls at all),
+so nothing local consumes it, and no MIME type or URL scheme is involved.
+There is nothing for this package to register; the fix belongs in the
+appliance's firmware.
+
+Two related symptoms are *not* this bug: if the browser offers to download the
+`sad` page instead of rendering it, the appliance is labelling that response
+with a content type the browser won't display; and saving the page by hand
+(<kbd>Ctrl</kbd>+<kbd>S</kbd>) also completes the logon, because the appliance
+sends `Cache-Control: no-store` and the save re-requests the URL. The reload is
+the same trick without the stray file.
+
+**Automating the reload.** If the keystroke gets old, a userscript manager
+(e.g. Violentmonkey) can do it — substitute your own appliance host:
+
+```js
+// ==UserScript==
+// @name     NetExtender SAML: nudge the session-status page
+// @include  /^https:\/\/vpn\.example\.com:4433\/SonicWall-SSLVPN\/sad/
+// @run-at   document-end
+// @grant    none
+// ==/UserScript==
+if (!sessionStorage.getItem('ne-sad-reloaded')) {
+  sessionStorage.setItem('ne-sad-reloaded', '1');
+  location.reload();
+}
+```
+
+The `sessionStorage` flag is what prevents a reload loop: it is scoped to that
+tab and origin, so the reloaded page sees it and stops, while the next logon
+starts in a fresh tab. `@include` with a regex rather than `@match`, because
+match patterns cannot express the `:4433` port.
+
 ## Notes & caveats
 
 - **`x86_64-linux` only** — SonicWall does not ship other Linux architectures.
