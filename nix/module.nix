@@ -63,11 +63,18 @@ in
       wantedBy = [ "multi-user.target" ];
       after = [ "network.target" ];
 
-      # wg-quick (invoked by NEService) shells out to these at runtime.
+      # wg-quick (invoked by NEService) shells out to these at runtime, as does
+      # NEService itself for the SSL-VPN (PPP) transport: it builds firewall
+      # rules with `iptables` and applies VPN DNS by bind-mounting
+      # /etc/resolv.conf inside a mount namespace (`unshare`, `mount`,
+      # `umount` -- all from util-linux). Without these the tunnel still comes
+      # up, but silently loses firewall rules and DNS.
       path = [
         cfg.package
         cfg.resolvconfPackage
         pkgs.iproute2
+        pkgs.iptables
+        pkgs.util-linux # unshare, mount, umount
         pkgs.procps # sysctl
         pkgs.gnugrep
         pkgs.gnused
