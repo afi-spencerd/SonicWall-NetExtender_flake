@@ -6,6 +6,10 @@
   makeWrapper,
   wrapGAppsHook3,
   glibc,
+  # Runtime PATH dependency, not a link-time one: both `nxcli` and the GUI hand
+  # the SAML login URL to a browser via github.com/pkg/browser, which shells
+  # out to `xdg-open`.
+  xdg-utils,
   # GUI-only dependencies (NEEDED by the webkit2gtk-4.1 build of the client)
   glib,
   gtk3,
@@ -70,9 +74,17 @@ stdenv.mkDerivation (finalAttrs: {
     # wg-quick ships a `#!/bin/bash` shebang; rewrite it to the store bash.
     patchShebangs "$dst/wg-quick"
 
+    # Without an `xdg-open` on PATH, SAML logon fails outright with "unable to
+    # open default system browser". Suffix rather than prefix: nxcli only needs
+    # *a* working xdg-open, so a session-provided one (which may be portal- or
+    # desktop-aware) should still win.
+    makeWrapper "$dst/nxcli" "$out/bin/nxcli" \
+      --suffix PATH : ${lib.makeBinPath [ xdg-utils ]}
+
     # `nxcli` doubles as the `netExtender` CLI (upstream symlinks it as such).
-    ln -s "$dst/nxcli" "$out/bin/nxcli"
-    ln -s "$dst/nxcli" "$out/bin/netExtender"
+    # It takes its command name from cobra, never from argv[0], so pointing the
+    # alias at the wrapper is enough.
+    ln -s nxcli "$out/bin/netExtender"
 
   ''
   + lib.optionalString withGui ''
@@ -88,7 +100,8 @@ stdenv.mkDerivation (finalAttrs: {
       --replace-fail /usr/local/netextender/nx-icon.png "$dst/nx-icon.png"
 
     makeWrapper "$dst/NetExtender" "$out/bin/NetExtender" \
-      "''${gappsWrapperArgs[@]}"
+      "''${gappsWrapperArgs[@]}" \
+      --suffix PATH : ${lib.makeBinPath [ xdg-utils ]}
   ''
   + ''
     runHook postInstall
