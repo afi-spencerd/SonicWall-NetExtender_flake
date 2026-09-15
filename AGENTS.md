@@ -22,7 +22,10 @@ Upstream artifact (pinned in `nix/package.nix`):
   `devShells.default`. Do not rely on tools being present on the host — add them
   to the dev shell instead. Enter it with `nix develop`.
 - **Formatter:** `nixfmt` (RFC 166 style, `nixfmt-rfc-style` in nixpkgs), wired
-  as the flake `formatter`. Run `nix fmt` before committing.
+  as the flake `formatter` through `pkgs.nixfmt-tree` (a treefmt wrapper) so
+  that a bare `nix fmt` formats the whole tree. Run it before committing;
+  `nix fmt -- --ci` checks instead of writing and exits non-zero when
+  something is unformatted.
 
 ## Version control
 

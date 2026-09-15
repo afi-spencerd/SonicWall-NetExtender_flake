@@ -32,7 +32,7 @@
             config.allowUnfree = true;
           };
 
-          formatter = pkgs.nixfmt;
+          formatter = pkgs.nixfmt-tree;
 
           packages.netextender = pkgs.callPackage ./nix/package.nix { };
           packages.default = config.packages.netextender;
