@@ -64,11 +64,11 @@ in
 
 stdenv.mkDerivation (finalAttrs: {
   pname = "sonicwall-netextender";
-  version = "10.3.5-36";
+  version = "10.3.6-39";
 
   src = fetchurl {
     url = "https://software.sonicwall.com/NetExtender/NetExtender-linux-amd64-${finalAttrs.version}.tar.gz";
-    hash = "sha256-iFgvqW+x3fKHaDvDZqcZil4+bs3Edz35E236Pkk9o4Y=";
+    hash = "sha256-wstYzDlALsXgihi1enP/EMoxMBes4G6nvwTZOIwbg1c=";
   };
 
   # The tarball unpacks into a top-level `netextender/` directory.

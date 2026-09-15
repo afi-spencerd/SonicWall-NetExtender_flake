@@ -10,7 +10,7 @@ pre-compiled `x86_64-linux` tarball, so the package patches the vendored ELF
 binaries for NixOS rather than building from source.
 
 Upstream artifact (pinned in `nix/package.nix`):
-<https://software.sonicwall.com/NetExtender/NetExtender-linux-amd64-10.3.5-36.tar.gz>
+<https://software.sonicwall.com/NetExtender/NetExtender-linux-amd64-10.3.6-39.tar.gz>
 
 ## Tooling preferences
 

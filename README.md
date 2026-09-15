@@ -2,7 +2,7 @@
 
 A Nix flake that packages the [SonicWall
 NetExtender](https://www.sonicwall.com/) Linux SSL-VPN client (version
-`10.3.5-36`) and provides a NixOS module to run its background service.
+`10.3.6-39`) and provides a NixOS module to run its background service.
 
 NetExtender is distributed by SonicWall only as a proprietary, pre-compiled
 `x86_64-linux` tarball. This flake fetches that tarball, patches the vendored
