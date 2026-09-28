@@ -92,9 +92,10 @@ and `DTLSVPN` protocols. The GUI is launched from your desktop menu (or
 | `services.netextender.package` | `pkgs.callPackage ./nix/package.nix {}` | The NetExtender package to run. |
 | `services.netextender.resolvconfPackage` | `pkgs.openresolv` | Provider of `resolvconf`, used by the bundled `wg-quick` for VPN DNS. Set to `config.systemd.package` when using systemd-resolved. |
 | `services.netextender.createBinBash` | `true` | Create `/bin/bash` (referenced by `NEService`). |
+| `services.netextender.interface` | `"snwl_ssltunnel"` | The tun interface NEService creates for the SSL-VPN tunnel. The helper units bind to its `.device` unit. |
+| `services.netextender.warnRouteCollisions` | `true` | Log a warning when a pushed route shadows a network this host is already on. Diagnostic only. |
 | `services.netextender.splitDns.enable` | `false` | Route only selected domains to the VPN's nameservers, via systemd-resolved. Requires `services.resolved.enable`. |
 | `services.netextender.splitDns.domains` | `[ ]` | The domains to resolve over the tunnel (e.g. your AD domain). Required when `splitDns.enable` is set. |
-| `services.netextender.splitDns.interface` | `"snwl_ssltunnel"` | The tun interface NEService creates for the SSL-VPN tunnel. |
 
 To build a lean, GUI-less client (no GTK/WebKit in the closure):
 
@@ -231,10 +232,81 @@ client's own call, so NEService and the helper cannot both write DNS. Set
 `resolvconfPackage` explicitly if you need the bundled `wg-quick` to keep a real
 `resolvconf`.
 
-> **The appliance may push a route for the network you are on.** The routes are
-> the appliance's to choose and this module does not filter them: if its list
-> includes the subnet your Wi-Fi is using, that route will blackhole your own
-> LAN for as long as the tunnel is up.
+**This arrangement fails closed.** Because the client's own DNS call is
+discarded, a failure in the helper — the `nxcli status -f` poll timing out,
+resolved not being up, `script` unable to get a pty — leaves the tunnel
+connected with *no* corporate DNS at all rather than with the wrong DNS. That is
+the right direction to fail in, but the symptom is "VPN connected, nothing
+corporate resolves", which on its own points nowhere:
+
+```console
+$ journalctl -u netextender-split-dns
+```
+
+`splitDns` is about *resolution*, not *routing* — it does nothing about which
+destinations go down the tunnel. See "The appliance's routes can shadow the
+network you are on" below, which is a separate problem and, on a roaming
+client, a larger one.
+
+### The appliance's routes can shadow the network you are on
+
+**Symptom.** While the tunnel is up, hosts on your local network get slow or
+stop answering — your own router, a NAS, a printer — while internet access
+carries on working normally. Nothing in any log mentions it.
+
+**Why.** The appliance decides which subnets to push and this module does not
+filter them. If one of them is the range your Wi-Fi is already using, both
+routes exist at once and the tunnel's wins, because NEService sets no metric on
+its routes (so, `0`) while NetworkManager's link routes sit at `600`:
+
+```
+10.57.50.0/24 via 192.168.2.63 dev snwl_ssltunnel        ← metric 0, wins
+10.57.50.0/24 dev wlo1 proto kernel ... metric 600
+```
+
+It is not a close call, and it applies to the gateway's own address too.
+
+**What actually breaks** (measured on a colliding network, 2026-09-28):
+
+| | |
+| --- | --- |
+| Internet traffic | **unaffected.** The default route pins its device, so the gateway is reached by neighbour lookup on the real link rather than a recursive lookup that would fall into the tunnel. |
+| The tunnel itself | **unaffected.** The client installs a `/32` host route to the appliance via the local gateway. |
+| Hosts on the shadowed range | redirected into the tunnel. What happens next depends on whether the VPN also serves that range. |
+
+That last row is the whole story. Two cases:
+
+- **The collided range is one the VPN serves** (you are in the office, on a
+  corporate subnet). Traffic still arrives, the long way round. Measured: the
+  gateway one hop away went from **1.7 ms to 44 ms** — slower than reaching
+  `8.8.8.8`. Nothing fails, so nothing gets reported, and this is the case you
+  will never diagnose.
+- **The collided range is a foreign network that happens to match** — a hotel
+  or home LAN on `192.168.2.0/24`, where the appliance pushes `192.168.2.0/24`
+  because that is its VPN pool. Those packets go to the corporate subnet and
+  never reach the machine down the hall. This is the case that looks like *"the
+  VPN broke my Wi-Fi"*.
+
+Ranges most likely to collide in the wild: `192.168.2.0/24` and
+`192.168.3.0/24` (stock consumer-router LANs), `10.10.10.0/24` (small-business
+gear), `172.16.30.0/24` (hypervisor defaults). Note that the VPN pool's own
+subnet is always pushed, so whatever your appliance hands out addresses from is
+permanently on the list.
+
+**What this module does about it.** Warns, and nothing else.
+`services.netextender.warnRouteCollisions` (on by default) runs a check when
+the tunnel appears and logs which pushed routes shadow a network this host is
+already attached to, plus whether the default gateway is one of them:
+
+```console
+$ journalctl -u netextender-route-collisions
+```
+
+It changes no routes. Filtering them would mean this module overriding the
+appliance's policy, which is not its call to make — and the real fix is on the
+appliance, which most people running a VPN client do not administer. If you
+need a route gone, delete it by hand or take it up with whoever runs the
+SonicWall.
 
 ## Notes & caveats
 
