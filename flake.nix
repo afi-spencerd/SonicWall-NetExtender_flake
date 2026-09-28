@@ -79,6 +79,25 @@
                 services.resolved.enable = true;
               };
 
+              connections = evalWith {
+                services.netextender = {
+                  enable = true;
+                  defaultConnection = "work";
+                  connections = {
+                    work = {
+                      server = "vpn.example.com:4433";
+                      username = "admin";
+                      domain = "example.com";
+                    };
+                    lab = {
+                      server = "lab.example.com";
+                      port = 4433;
+                      protocol = "sslvpn";
+                    };
+                  };
+                };
+              };
+
               # Reading `assertions` is what makes a failed one abort the check
               # rather than evaluate to a quietly-ignored list.
               forced = builtins.toJSON {
@@ -95,6 +114,15 @@
                     ;
                   resolvconf = splitDns.config.services.netextender.resolvconfPackage.outPath;
                   assertions = map (a: a.assertion) splitDns.config.assertions;
+                };
+                connections = {
+                  inherit (connections.config.systemd.services.netextender-profiles)
+                    serviceConfig
+                    before
+                    requiredBy
+                    ;
+                  inherit (connections.config.systemd.services.NEService) restartTriggers;
+                  assertions = map (a: a.assertion) connections.config.assertions;
                 };
               };
             in

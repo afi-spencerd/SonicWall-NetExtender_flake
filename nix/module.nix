@@ -71,6 +71,100 @@ let
     ${resolvectl} default-route "$iface" false
   '';
 
+  # profile.json is the client's own mutable state -- NEService rewrites it on
+  # connect to record the resolved address and the domain type it discovered --
+  # so this cannot be an `environment.etc` symlink into the store. It is
+  # rendered and copied into place instead, before the daemon starts.
+  #
+  # Driving `nxcli connection add` was the obvious alternative and does not
+  # work: it contacts the appliance to validate, prompts interactively when it
+  # cannot reach one, and its `--force` path silently discards `-d domain`.
+  # `connection edit` has no `--force` at all. Both also need the daemon up,
+  # and both renumber ids and move the `default` flag as a side effect.
+  splitHostPort =
+    s:
+    let
+      parts = lib.splitString ":" s;
+    in
+    if builtins.length parts > 1 then
+      {
+        host = builtins.head parts;
+        port = lib.last parts;
+      }
+    else
+      {
+        host = s;
+        port = null;
+      };
+
+  renderProfile =
+    index: name: c:
+    let
+      sp = splitHostPort c.server;
+      port = if sp.port != null then sp.port else toString c.port;
+    in
+    {
+      # Ids are positional and stable for a given set of names, because the
+      # attrset is already sorted; the client only uses them internally.
+      id = toString (index + 1);
+      default = if cfg.defaultConnection == name then "true" else "false";
+      inherit name;
+      server = "${sp.host}:${port}";
+      # Seed value. The client replaces this with the resolved address on the
+      # first connect, and the merge below keeps that result.
+      host = sp.host;
+      inherit port;
+      inherit (c)
+        username
+        protocol
+        domain
+        clientCert
+        ;
+    }
+    // lib.optionalAttrs (c.domainType != null) { inherit (c) domainType; };
+
+  declaredProfiles = pkgs.writeText "netextender-profiles.json" (
+    builtins.toJSON {
+      profiles = lib.imap0 (i: name: renderProfile i name cfg.connections.${name}) (
+        lib.attrNames cfg.connections
+      );
+    }
+  );
+
+  profileScript = pkgs.writeShellScript "netextender-profiles" ''
+    set -euo pipefail
+
+    dir=/etc/SonicWall/NetExtender/Config
+    live=$dir/profile.json
+    mkdir -p "$dir"
+
+    # Keep one copy of whatever existed before this module took over, so the
+    # first activation is not a one-way door for hand-made profiles.
+    if [ -e "$live" ] && [ ! -e "$dir/profile.json.before-nixos" ]; then
+      cp -a "$live" "$dir/profile.json.before-nixos"
+    fi
+    [ -e "$live" ] || echo '{"profiles":[]}' > "$live"
+
+    # Declared profiles win, except for the two fields the client discovers for
+    # itself -- and those are only carried over while `server` still matches,
+    # since a resolved address for some other appliance is worse than none.
+    ${lib.getExe pkgs.jq} -n       --slurpfile old "$live"       --slurpfile new ${declaredProfiles}       '
+        ($old[0].profiles // []) as $prev
+        | { profiles: [
+              $new[0].profiles[]
+              | . as $n
+              | ($prev | map(select(.name == $n.name and .server == $n.server)) | first) as $p
+              | $n
+                + (if $p and ($p.host // "") != "" then { host: $p.host } else {} end)
+                + (if $p and ($p.domainType // null) != null and ($n | has("domainType") | not)
+                   then { domainType: $p.domainType } else {} end)
+            ] }
+      ' > "$live.new"
+
+    mv "$live.new" "$live"
+    chmod 0644 "$live"
+  '';
+
   # Diagnostic only. The appliance chooses the routes and this module does not
   # filter them -- see the README -- but the failure is otherwise completely
   # silent, so at least name it in the journal.
@@ -199,6 +293,129 @@ in
       '';
     };
 
+    connections = lib.mkOption {
+      default = { };
+      example = lib.literalExpression ''
+        {
+          work = {
+            server = "vpn.example.com";
+            port = 4433;
+            username = "admin";
+            domain = "example.com";
+            protocol = "auto";
+          };
+        }
+      '';
+      description = ''
+        Connection profiles to write into the client's `profile.json`, keyed by
+        the name `nxcli connect <name>` takes. Equivalent to what
+        `nxcli connection add` would create, but without needing the appliance
+        to be reachable at activation time.
+
+        **These are authoritative.** Any profile not declared here is removed,
+        so a profile made by hand with `nxcli connection add` will disappear on
+        the next rebuild. The file as it was before this module first touched it
+        is kept at `/etc/SonicWall/NetExtender/Config/profile.json.before-nixos`.
+        Leave this at `{ }` to not manage profiles at all.
+
+        Note that `--force` and `--always-trust` have no equivalent here: they
+        are flags to the `nxcli` invocation, not properties of a stored profile,
+        and nothing in the client's on-disk config records them. Passwords have
+        no equivalent either -- the client takes those at connect time.
+      '';
+      type = lib.types.attrsOf (
+        lib.types.submodule (
+          { name, ... }:
+          {
+            options = {
+              server = lib.mkOption {
+                type = lib.types.str;
+                example = "vpn.example.com";
+                description = ''
+                  Appliance hostname or address. May carry a `:port` suffix, in
+                  which case it wins over {option}`port`. IPv4 and hostnames
+                  only -- a bracketed IPv6 literal is not parsed.
+                '';
+              };
+
+              port = lib.mkOption {
+                type = lib.types.port;
+                default = 443;
+                description = ''
+                  Port to reach the appliance on, unless {option}`server`
+                  already carries one. 443 is the client's own default; SonicOS
+                  commonly uses 4433.
+                '';
+              };
+
+              username = lib.mkOption {
+                type = lib.types.str;
+                default = "";
+                description = ''
+                  Account name to pre-fill. The password is never stored -- it
+                  is given to `nxcli connect -p`, or handled by SAML.
+                '';
+              };
+
+              domain = lib.mkOption {
+                type = lib.types.str;
+                default = "";
+                description = ''
+                  Appliance login domain. Note that `nxcli connection add
+                  --force` drops this field when it cannot reach the appliance;
+                  writing the profile directly, as this module does, does not.
+                '';
+              };
+
+              protocol = lib.mkOption {
+                type = lib.types.enum [
+                  "auto"
+                  "sslvpn"
+                  "dtlsvpn"
+                  "wireguard"
+                ];
+                default = "auto";
+                description = ''
+                  Transport to negotiate. These are the values the client
+                  stores; `nxcli` spells the same four `Auto`, `TLS`, `DTLS` and
+                  `WireGuard` on its command line.
+                '';
+              };
+
+              domainType = lib.mkOption {
+                type = lib.types.nullOr lib.types.str;
+                default = null;
+                example = "saml";
+                description = ''
+                  How the appliance authenticates this domain. Leave null: the
+                  client discovers it on the first logon and the value is kept
+                  across rebuilds. Set it only to pin a discovery that goes
+                  wrong.
+                '';
+              };
+
+              clientCert = lib.mkOption {
+                type = lib.types.str;
+                default = "";
+                description = "Client certificate to present, if the appliance requires one.";
+              };
+            };
+          }
+        )
+      );
+    };
+
+    defaultConnection = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      example = "work";
+      description = ''
+        Which of {option}`services.netextender.connections` is marked default --
+        the one a bare `nxcli connect` uses. May be left null when exactly one
+        connection is declared.
+      '';
+    };
+
     splitDns = {
       enable = lib.mkEnableOption ''
         split DNS for the NetExtender tunnel through systemd-resolved.
@@ -251,6 +468,23 @@ in
         '';
       }
       {
+        assertion = cfg.defaultConnection != null -> cfg.connections ? ${toString cfg.defaultConnection};
+        message = ''
+          services.netextender.defaultConnection is set to
+          "${toString cfg.defaultConnection}", which is not one of
+          services.netextender.connections
+          (${lib.concatStringsSep ", " (lib.attrNames cfg.connections)}).
+        '';
+      }
+      {
+        assertion = (lib.length (lib.attrNames cfg.connections) > 1) -> cfg.defaultConnection != null;
+        message = ''
+          services.netextender.connections declares more than one profile, so
+          services.netextender.defaultConnection must say which of them a bare
+          `nxcli connect` should use.
+        '';
+      }
+      {
         assertion = cfg.splitDns.enable -> cfg.splitDns.domains != [ ];
         message = ''
           services.netextender.splitDns.domains is empty, so no query would ever
@@ -269,10 +503,30 @@ in
     ]
     ++ lib.optional cfg.createBinBash "L+ /bin/bash - - - - ${lib.getExe pkgs.bash}";
 
+    # Ordered before the daemon: NEService reads profile.json at startup and
+    # writes it back later, so seeding it underneath a running daemon would just
+    # be overwritten.
+    systemd.services.netextender-profiles = lib.mkIf (cfg.connections != { }) {
+      description = "Write the declared NetExtender connection profiles";
+      before = [ "NEService.service" ];
+      requiredBy = [ "NEService.service" ];
+      wantedBy = [ "multi-user.target" ];
+
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        ExecStart = profileScript;
+      };
+    };
+
     systemd.services.NEService = {
       description = "SonicWall NetExtender Service";
       wantedBy = [ "multi-user.target" ];
       after = [ "network.target" ];
+
+      # A changed profile set has to reach the running daemon, which only reads
+      # the file at startup.
+      restartTriggers = lib.optional (cfg.connections != { }) declaredProfiles;
 
       # wg-quick (invoked by NEService) shells out to these at runtime, as does
       # NEService itself for the SSL-VPN (PPP) transport: it builds firewall
