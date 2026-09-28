@@ -71,6 +71,36 @@ let
     ${resolvectl} default-route "$iface" false
   '';
 
+  settingsFormat = pkgs.formats.json { };
+
+  declaredSettings = settingsFormat.generate "netextender-settings.json" cfg.settings;
+
+  # setting.json is merged rather than replaced: unlike profiles it holds values
+  # that are none of this module's business (the negotiated MTU, proxy details a
+  # user set through the GUI), and clobbering those to defaults on every rebuild
+  # would be worse than leaving an undeclared key alone. `*` is jq's recursive
+  # merge, so the nested proxy object survives too.
+  settingsScript = pkgs.writeShellScript "netextender-settings" ''
+    set -euo pipefail
+
+    dir=/etc/SonicWall/NetExtender/Config
+    live=$dir/setting.json
+    mkdir -p "$dir"
+
+    if [ -e "$live" ] && [ ! -e "$dir/setting.json.before-nixos" ]; then
+      cp -a "$live" "$dir/setting.json.before-nixos"
+    fi
+    [ -e "$live" ] || echo '{}' > "$live"
+
+    ${lib.getExe pkgs.jq} -n \
+      --slurpfile old "$live" \
+      --slurpfile new ${declaredSettings} \
+      '($old[0] // {}) * $new[0]' > "$live.new"
+
+    mv "$live.new" "$live"
+    chmod 0644 "$live"
+  '';
+
   # profile.json is the client's own mutable state -- NEService rewrites it on
   # connect to record the resolved address and the domain type it discovered --
   # so this cannot be an `environment.etc` symlink into the store. It is
@@ -293,6 +323,45 @@ in
       '';
     };
 
+    settings = lib.mkOption {
+      default = { };
+      example = {
+        mtu = 1400;
+        useBrowser = "firefox";
+      };
+      description = ''
+        Values for the client's `setting.json`, the same set
+        `nxcli settings list` shows. Merged into the existing file, so keys not
+        named here keep whatever value they had -- this file also holds things
+        a user may have set through the GUI.
+
+        The file as it was before this module first touched it is kept at
+        `/etc/SonicWall/NetExtender/Config/setting.json.before-nixos`.
+      '';
+      type = lib.types.submodule {
+        freeformType = settingsFormat.type;
+
+        options.disableAutoUpgrade = lib.mkOption {
+          type = lib.types.bool;
+          default = true;
+          description = ''
+            Stop the client upgrading itself. **Leave this on.** NEService
+            otherwise checks `/__api__/v1/client/nxversion` on the appliance at
+            connect time, downloads `/NetExtender-<version>.tar.gz` to
+            `/tmp/NetExtender.tar.gz`, and runs a generated `/tmp/nxupgrade.sh`
+            that installs over `/usr/local/netextender` -- which on NixOS is
+            this module's tmpfiles symlink into the read-only store. Upgrade by
+            bumping the version and hash in `nix/package.nix` instead.
+
+            Note the appliance has the final say: `nxcli settings list`
+            describes this as "When admin allowed", so a SonicWall configured
+            to force upgrades may ignore it. The store being read-only is the
+            actual guarantee; this setting just stops the attempt.
+          '';
+        };
+      };
+    };
+
     connections = lib.mkOption {
       default = { };
       example = lib.literalExpression ''
@@ -503,6 +572,19 @@ in
     ]
     ++ lib.optional cfg.createBinBash "L+ /bin/bash - - - - ${lib.getExe pkgs.bash}";
 
+    systemd.services.netextender-settings = {
+      description = "Write the declared NetExtender client settings";
+      before = [ "NEService.service" ];
+      requiredBy = [ "NEService.service" ];
+      wantedBy = [ "multi-user.target" ];
+
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        ExecStart = settingsScript;
+      };
+    };
+
     # Ordered before the daemon: NEService reads profile.json at startup and
     # writes it back later, so seeding it underneath a running daemon would just
     # be overwritten.
@@ -526,7 +608,10 @@ in
 
       # A changed profile set has to reach the running daemon, which only reads
       # the file at startup.
-      restartTriggers = lib.optional (cfg.connections != { }) declaredProfiles;
+      restartTriggers = [
+        declaredSettings
+      ]
+      ++ lib.optional (cfg.connections != { }) declaredProfiles;
 
       # wg-quick (invoked by NEService) shells out to these at runtime, as does
       # NEService itself for the SSL-VPN (PPP) transport: it builds firewall
