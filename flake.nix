@@ -40,28 +40,62 @@
           # Cheap sanity check: fully evaluate a NixOS system that enables the
           # module, forcing the service unit + tmpfiles rules (and the package
           # reference) to resolve. Catches module regressions in `nix flake
-          # check` without building a full system.
+          # check` without building a full system. The second configuration
+          # exercises the split-DNS path, whose helper unit and resolvconf stub
+          # only exist when it is on.
           checks.module-eval =
             let
-              sys = inputs.nixpkgs.lib.nixosSystem {
-                inherit system;
-                modules = [
-                  inputs.self.nixosModules.default
-                  {
-                    services.netextender.enable = true;
-                    nixpkgs.config.allowUnfree = true;
-                    boot.loader.grub.enable = false;
-                    fileSystems."/" = {
-                      device = "/dev/sda1";
-                      fsType = "ext4";
-                    };
-                    system.stateVersion = "25.05";
-                  }
-                ];
+              base = {
+                nixpkgs.config.allowUnfree = true;
+                boot.loader.grub.enable = false;
+                fileSystems."/" = {
+                  device = "/dev/sda1";
+                  fsType = "ext4";
+                };
+                system.stateVersion = "25.05";
               };
+
+              evalWith =
+                module:
+                inputs.nixpkgs.lib.nixosSystem {
+                  inherit system;
+                  modules = [
+                    inputs.self.nixosModules.default
+                    base
+                    module
+                  ];
+                };
+
+              plain = evalWith { services.netextender.enable = true; };
+
+              splitDns = evalWith {
+                services.netextender = {
+                  enable = true;
+                  splitDns = {
+                    enable = true;
+                    domains = [ "example.com" ];
+                  };
+                };
+                services.resolved.enable = true;
+              };
+
+              # Reading `assertions` is what makes a failed one abort the check
+              # rather than evaluate to a quietly-ignored list.
               forced = builtins.toJSON {
-                inherit (sys.config.systemd.services.NEService) serviceConfig path;
-                inherit (sys.config.systemd.tmpfiles) rules;
+                plain = {
+                  inherit (plain.config.systemd.services.NEService) serviceConfig path;
+                  inherit (plain.config.systemd.tmpfiles) rules;
+                  assertions = map (a: a.assertion) plain.config.assertions;
+                };
+                splitDns = {
+                  inherit (splitDns.config.systemd.services.netextender-split-dns)
+                    serviceConfig
+                    bindsTo
+                    wantedBy
+                    ;
+                  resolvconf = splitDns.config.services.netextender.resolvconfPackage.outPath;
+                  assertions = map (a: a.assertion) splitDns.config.assertions;
+                };
               };
             in
             pkgs.runCommand "netextender-module-eval" { inherit forced; } ''
