@@ -47,13 +47,43 @@
             let
               base = {
                 nixpkgs.config.allowUnfree = true;
+                # Evaluating a NixOS system demands a root filesystem and a
+                # bootloader. Neither is ever built into a bootable system or
+                # activated here -- the check only reads option values back out
+                # -- so both are inert placeholders, and evaluation does no
+                # block-device I/O whatever this says. A tmpfs root rather than
+                # a /dev/... path, so nothing reads as a real disk.
+                #
+                # `boot.isContainer` would lift both requirements in one line,
+                # but it also changes defaults (it turns on
+                # networking.useHostResolvConf, which resolved then rejects),
+                # and the point of this check is to evaluate what a normal host
+                # would get.
                 boot.loader.grub.enable = false;
                 fileSystems."/" = {
-                  device = "/dev/sda1";
-                  fsType = "ext4";
+                  device = "none";
+                  fsType = "tmpfs";
                 };
                 system.stateVersion = "25.05";
               };
+
+              # `config.assertions` is a list of { assertion, message }, and
+              # reading it does not fail on its own: a violated one is just
+              # `false` sitting in a list, which serialises happily. Only
+              # building the system's toplevel normally turns that into an
+              # error, and this check deliberately does not go that far, so
+              # raise it here instead.
+              checkAssertions =
+                label: sys:
+                let
+                  failed = builtins.filter (a: !a.assertion) sys.config.assertions;
+                in
+                if failed == [ ] then
+                  true
+                else
+                  throw "module-eval (${label}): ${
+                    inputs.nixpkgs.lib.concatMapStringsSep " / " (a: a.message) failed
+                  }";
 
               evalWith =
                 module:
@@ -104,7 +134,7 @@
                 plain = {
                   inherit (plain.config.systemd.services.NEService) serviceConfig path;
                   inherit (plain.config.systemd.tmpfiles) rules;
-                  assertions = map (a: a.assertion) plain.config.assertions;
+                  assertions = checkAssertions "plain" plain;
                 };
                 splitDns = {
                   inherit (splitDns.config.systemd.services.netextender-split-dns)
@@ -113,7 +143,7 @@
                     wantedBy
                     ;
                   resolvconf = splitDns.config.services.netextender.resolvconfPackage.outPath;
-                  assertions = map (a: a.assertion) splitDns.config.assertions;
+                  assertions = checkAssertions "splitDns" splitDns;
                 };
                 connections = {
                   inherit (connections.config.systemd.services.netextender-profiles)
@@ -122,7 +152,7 @@
                     requiredBy
                     ;
                   inherit (connections.config.systemd.services.NEService) restartTriggers;
-                  assertions = map (a: a.assertion) connections.config.assertions;
+                  assertions = checkAssertions "connections" connections;
                 };
               };
             in
