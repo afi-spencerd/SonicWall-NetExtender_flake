@@ -96,6 +96,8 @@ and `DTLSVPN` protocols. The GUI is launched from your desktop menu (or
 | `services.netextender.warnRouteCollisions` | `true` | Log a warning when a pushed route shadows a network this host is already on. Diagnostic only. |
 | `services.netextender.connections` | `{ }` | Declarative connection profiles, keyed by the name `nxcli connect <name>` takes. Authoritative — see below. |
 | `services.netextender.defaultConnection` | `null` | Which declared connection a bare `nxcli connect` uses. Required when more than one is declared. |
+| `services.netextender.settings` | `{ }` | Values for the client's `setting.json` (`nxcli settings list`). Merged, not replaced. |
+| `services.netextender.settings.disableAutoUpgrade` | `true` | Stop the client upgrading itself over the Nix store. |
 | `services.netextender.splitDns.enable` | `false` | Route only selected domains to the VPN's nameservers, via systemd-resolved. Requires `services.resolved.enable`. |
 | `services.netextender.splitDns.domains` | `[ ]` | The domains to resolve over the tunnel (e.g. your AD domain). Required when `splitDns.enable` is set. |
 
@@ -173,6 +175,50 @@ interactively when it cannot reach one, its `--force` path silently discards
 `-d domain`, `connection edit` has no `--force` at all, both need the daemon
 already running, and both renumber ids and move the `default` flag as a side
 effect.
+
+## Client settings, and the auto-upgrader
+
+`services.netextender.settings` writes the client's `setting.json` — the same
+values `nxcli settings list` shows. Unlike connections these are **merged**:
+keys you do not name keep whatever they had, because this file also holds
+things a user may have set through the GUI. The original is kept once at
+`setting.json.before-nixos`.
+
+```nix
+services.netextender.settings = {
+  mtu = 1400;
+  useBrowser = "firefox";
+};
+```
+
+`disableAutoUpgrade` defaults to **`true`** here, which is not the client's own
+default. Left off, NEService checks for a new version every time it connects:
+
+| step | what happens |
+| --- | --- |
+| check | `GET /__api__/v1/client/nxversion` on **your appliance** — not SonicWall's download host |
+| download | `/NetExtender-<version>.tar.gz` from the appliance, into `/tmp/NetExtender.tar.gz` |
+| install | a generated `/tmp/nxupgrade.sh` runs and installs over `/usr/local/netextender` |
+
+On NixOS that last path is this module's tmpfiles symlink into the read-only
+store, so the upgrade cannot succeed — but it can still replace the symlink and
+leave an unmanaged copy shadowing the packaged one. Upgrade by bumping the
+version and hash in `nix/package.nix` instead.
+
+Two caveats. The appliance has the final say: `nxcli settings list` describes
+this setting as *"When admin allowed"*, so a SonicWall configured to force
+upgrades may ignore it — the store being read-only is the actual guarantee, and
+this setting only stops the attempt. And the bundled `autoUpgrader` binary is
+still installed; it is a Wails GUI that prompts, not the thing that downloads.
+
+### Knowing when a new version exists
+
+`/__api__/v1/client/nxversion` is the appliance's answer to "what should this
+client be running", which makes it the honest thing to check against — it
+reflects what your SonicWall actually serves, rather than the newest tarball
+SonicWall has published. It needs an authenticated session, so it is not a
+drive-by `curl`. Nothing in this flake polls it today; bumping the pin stays a
+manual step.
 
 ## Trying it without a module
 
@@ -381,8 +427,10 @@ SonicWall.
 ## Notes & caveats
 
 - **`x86_64-linux` only** — SonicWall does not ship other Linux architectures.
-- **Do not run the bundled `autoUpgrader`.** It would try to write into the
-  read-only Nix store. Upgrade by bumping the version + hash instead.
+- **The bundled auto-upgrader is disabled by default**
+  (`services.netextender.settings.disableAutoUpgrade`), because it would try to
+  install over the read-only Nix store. Upgrade by bumping the version + hash
+  instead. See "Client settings, and the auto-upgrader" above.
 - The upstream tarball bundles its own WireGuard (`wg`, `wg-quick`,
   `wireguard-go`); this package patches and keeps those, because `NEService`
   resolves them by absolute path.
