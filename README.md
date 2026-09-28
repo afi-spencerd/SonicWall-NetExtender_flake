@@ -55,6 +55,10 @@ daemon that the `netExtender` CLI and GUI talk to over `localhost:51330`.
 
   # On a systemd-resolved host, use resolved's resolvconf shim for VPN DNS:
   # services.netextender.resolvconfPackage = config.systemd.package;
+
+  # ...or keep the VPN's nameservers to the domains that need them; see
+  # "NetExtender has no split DNS" under Known issues.
+  # services.netextender.splitDns = { enable = true; domains = [ "example.com" ]; };
 }
 ```
 
@@ -88,6 +92,9 @@ and `DTLSVPN` protocols. The GUI is launched from your desktop menu (or
 | `services.netextender.package` | `pkgs.callPackage ./nix/package.nix {}` | The NetExtender package to run. |
 | `services.netextender.resolvconfPackage` | `pkgs.openresolv` | Provider of `resolvconf`, used by the bundled `wg-quick` for VPN DNS. Set to `config.systemd.package` when using systemd-resolved. |
 | `services.netextender.createBinBash` | `true` | Create `/bin/bash` (referenced by `NEService`). |
+| `services.netextender.splitDns.enable` | `false` | Route only selected domains to the VPN's nameservers, via systemd-resolved. Requires `services.resolved.enable`. |
+| `services.netextender.splitDns.domains` | `[ ]` | The domains to resolve over the tunnel (e.g. your AD domain). Required when `splitDns.enable` is set. |
+| `services.netextender.splitDns.interface` | `"snwl_ssltunnel"` | The tun interface NEService creates for the SSL-VPN tunnel. |
 
 To build a lean, GUI-less client (no GTK/WebKit in the closure):
 
@@ -175,6 +182,59 @@ The `sessionStorage` flag is what prevents a reload loop: it is scoped to that
 tab and origin, so the reloaded page sees it and stops, while the next logon
 starts in a fresh tab. `@include` with a regex rather than `@match`, because
 match patterns cannot express the `:4433` port.
+
+### NetExtender has no split DNS, and takes over all of it
+
+**Symptom.** While the tunnel is up every lookup on the host goes to the
+appliance's nameservers, and unqualified names on your *local* network stop
+resolving. Depending on what else writes `/etc/resolv.conf`, your search domain
+may disappear too, so short corporate names break as well.
+
+**Why.** NetExtender applies VPN DNS by piping a `resolv.conf` into
+`resolvconf -a <iface>`. That is the whole mechanism — there is no per-domain
+routing anywhere in the client, and `resolvectl` appears nowhere in the
+binaries. openresolv then merges the VPN's nameservers into the single
+system-wide `/etc/resolv.conf`, displacing the ones your local link supplied.
+The appliance makes it worse by pushing an empty `domainSuffixes`, so nothing
+supplies a search domain to replace what the merge drops.
+
+(When no `resolvconf` is on `PATH` the client instead bind-mounts its
+`resolv.conf` over `/etc/resolv.conf` — but it does so inside its own mount
+namespace, so that path has no effect on the host at all. This is why DNS
+appears to do nothing on a NixOS host that has not put a `resolvconf`
+implementation on the service's `PATH`.)
+
+**Workaround.** `services.netextender.splitDns` hands DNS to systemd-resolved
+instead:
+
+```nix
+{
+  services.resolved.enable = true;
+  networking.networkmanager.dns = "systemd-resolved";
+
+  services.netextender.splitDns = {
+    enable = true;
+    domains = [ "example.com" ];
+  };
+}
+```
+
+A oneshot unit bound to `sys-subsystem-net-devices-snwl_ssltunnel.device` reads
+the negotiated servers out of `nxcli status -f` and registers them against the
+tunnel link as *routing-only* domains, with `default-route` off — so
+`example.com` resolves over the VPN and everything else stays on the local
+resolver. Add reverse zones (`12.168.192.in-addr.arpa`) to `domains` if you want
+PTR lookups to follow.
+
+Enabling this also points `resolvconfPackage` at a stub that discards the
+client's own call, so NEService and the helper cannot both write DNS. Set
+`resolvconfPackage` explicitly if you need the bundled `wg-quick` to keep a real
+`resolvconf`.
+
+> **The appliance may push a route for the network you are on.** The routes are
+> the appliance's to choose and this module does not filter them: if its list
+> includes the subnet your Wi-Fi is using, that route will blackhole your own
+> LAN for as long as the tunnel is up.
 
 ## Notes & caveats
 
