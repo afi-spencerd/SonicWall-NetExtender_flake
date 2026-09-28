@@ -8,7 +8,7 @@
 let
   cfg = config.services.netextender;
 
-  deviceUnit = "sys-subsystem-net-devices-${cfg.splitDns.interface}.device";
+  deviceUnit = "sys-subsystem-net-devices-${cfg.interface}.device";
 
   resolvectl = lib.getExe' config.systemd.package "resolvectl";
 
@@ -36,7 +36,7 @@ let
   splitDnsScript = pkgs.writeShellScript "netextender-split-dns" ''
     set -euo pipefail
 
-    iface=${lib.escapeShellArg cfg.splitDns.interface}
+    iface=${lib.escapeShellArg cfg.interface}
 
     # nxcli puts its terminal into raw mode unconditionally -- even for
     # `status --format`, and even when stdout is a pipe or a regular file --
@@ -70,6 +70,67 @@ let
     # too, which is the full-tunnel DNS we are trying to get away from.
     ${resolvectl} default-route "$iface" false
   '';
+
+  # Diagnostic only. The appliance chooses the routes and this module does not
+  # filter them -- see the README -- but the failure is otherwise completely
+  # silent, so at least name it in the journal.
+  #
+  # Both checks below defer to the kernel rather than doing prefix arithmetic in
+  # shell: a collision is exactly "the same prefix is present on the tunnel and
+  # on some other device", and `ip route get` answers the gateway question with
+  # the same FIB lookup the stack itself would do.
+  routeCollisionScript = pkgs.writeShellScript "netextender-route-collisions" ''
+    # No `-e`: a check that cannot answer should not suppress the other one.
+    set -uo pipefail
+
+    iface=${lib.escapeShellArg cfg.interface}
+    ip=${lib.getExe' pkgs.iproute2 "ip"}
+
+    # Routes land a moment after the link itself does.
+    for _ in $(seq 1 20); do
+      [ -n "$($ip -4 route show dev "$iface" 2>/dev/null)" ] && break
+      sleep 0.5
+    done
+
+    shadowed=
+    while read -r prefix; do
+      [ -n "$prefix" ] || continue
+      others=$(
+        $ip -4 route show exact "$prefix" 2>/dev/null \
+          | grep -v "dev $iface" \
+          | grep -oP 'dev \K[^ ]+' \
+          | sort -u \
+          | paste -sd' ' -
+      )
+      [ -n "$others" ] && shadowed="$shadowed  $prefix (this host is also on it via: $others)"$'\n'
+    done <<EOF
+    $($ip -4 route show dev "$iface" 2>/dev/null | grep -oP '^[0-9.]+/[0-9]+')
+    EOF
+
+    if [ -n "$shadowed" ]; then
+      printf '%s\n%s' \
+        "the appliance pushed routes for networks this host is already attached to:" \
+        "$shadowed" >&2
+      echo "traffic to those networks now goes through the VPN. The default route is" >&2
+      echo "unaffected, so internet access keeps working; local hosts in those ranges are" >&2
+      echo "reached the long way round, or not at all where the VPN does not serve them." >&2
+    fi
+
+    # The gateway is the case worth calling out separately: it still works,
+    # because the default route pins its device and reaches it by neighbour
+    # lookup rather than a recursive FIB lookup -- but everything addressed to
+    # the gateway itself now detours through the appliance.
+    gw=$($ip -4 route show default 2>/dev/null | grep -oP 'via \K[^ ]+' | head -1)
+    if [ -n "$gw" ]; then
+      gwdev=$($ip -4 route get "$gw" 2>/dev/null | grep -oP 'dev \K[^ ]+' | head -1)
+      if [ "$gwdev" = "$iface" ]; then
+        echo "the default gateway ($gw) is inside a pushed subnet and is now reached" >&2
+        echo "through the tunnel. Routing still works; traffic to the gateway itself takes" >&2
+        echo "a detour through the appliance and gets slower." >&2
+      fi
+    fi
+  '';
+
 in
 {
   options.services.netextender = {
@@ -117,6 +178,27 @@ in
       '';
     };
 
+    interface = lib.mkOption {
+      type = lib.types.str;
+      default = "snwl_ssltunnel";
+      description = ''
+        Name of the tun interface NEService creates for the SSL-VPN tunnel. The
+        helper units are bound to this interface's systemd `.device` unit.
+      '';
+    };
+
+    warnRouteCollisions = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = ''
+        Log a warning when the appliance pushes a route for a network this host
+        is already attached to. Diagnostic only -- it changes no routes and
+        makes no policy decision, it just gives the failure a name in the
+        journal. See "The appliance's routes can shadow the network you are on"
+        in the README.
+      '';
+    };
+
     splitDns = {
       enable = lib.mkEnableOption ''
         split DNS for the NetExtender tunnel through systemd-resolved.
@@ -126,7 +208,14 @@ in
         lookup on the host. This instead registers them with resolved as the
         tunnel link's servers, restricted to
         {option}`services.netextender.splitDns.domains`, so the rest of your
-        traffic keeps using the local network's resolver
+        traffic keeps using the local network's resolver.
+
+        Note that this fails closed: enabling it stops NEService applying DNS
+        at all (see {option}`services.netextender.resolvconfPackage`), so if
+        `netextender-split-dns.service` fails the tunnel comes up with no
+        corporate DNS whatsoever. That is the safe direction to fail in, but
+        the symptom -- connected, nothing corporate resolves -- points nowhere
+        on its own, so check `journalctl -u netextender-split-dns` first
       '';
 
       domains = lib.mkOption {
@@ -144,15 +233,6 @@ in
           The appliance pushes no suffix of its own, so this list is the only
           thing that sends queries over the tunnel. Include reverse zones for
           the pushed subnets if you want PTR lookups to go over it too.
-        '';
-      };
-
-      interface = lib.mkOption {
-        type = lib.types.str;
-        default = "snwl_ssltunnel";
-        description = ''
-          Name of the tun interface NEService creates for the SSL-VPN tunnel.
-          The helper unit is bound to this interface's systemd `.device` unit.
         '';
       };
     };
@@ -245,7 +325,22 @@ in
         ExecStart = splitDnsScript;
         # Best-effort: when the tunnel drops, the link and its settings go with
         # it, so a failure here is not interesting.
-        ExecStop = "-${resolvectl} revert ${cfg.splitDns.interface}";
+        ExecStop = "-${resolvectl} revert ${cfg.interface}";
+      };
+    };
+
+    # Same trigger as the split-DNS helper: the daemon runs continuously while
+    # the tunnel comes and goes underneath it, so the interface is the event.
+    systemd.services.netextender-route-collisions = lib.mkIf cfg.warnRouteCollisions {
+      description = "Report NetExtender routes that shadow local networks";
+      bindsTo = [ deviceUnit ];
+      after = [ deviceUnit ];
+      wantedBy = [ deviceUnit ];
+
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        ExecStart = routeCollisionScript;
       };
     };
 
