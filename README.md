@@ -94,6 +94,8 @@ and `DTLSVPN` protocols. The GUI is launched from your desktop menu (or
 | `services.netextender.createBinBash` | `true` | Create `/bin/bash` (referenced by `NEService`). |
 | `services.netextender.interface` | `"snwl_ssltunnel"` | The tun interface NEService creates for the SSL-VPN tunnel. The helper units bind to its `.device` unit. |
 | `services.netextender.warnRouteCollisions` | `true` | Log a warning when a pushed route shadows a network this host is already on. Diagnostic only. |
+| `services.netextender.connections` | `{ }` | Declarative connection profiles, keyed by the name `nxcli connect <name>` takes. Authoritative — see below. |
+| `services.netextender.defaultConnection` | `null` | Which declared connection a bare `nxcli connect` uses. Required when more than one is declared. |
 | `services.netextender.splitDns.enable` | `false` | Route only selected domains to the VPN's nameservers, via systemd-resolved. Requires `services.resolved.enable`. |
 | `services.netextender.splitDns.domains` | `[ ]` | The domains to resolve over the tunnel (e.g. your AD domain). Required when `splitDns.enable` is set. |
 
@@ -103,6 +105,74 @@ To build a lean, GUI-less client (no GTK/WebKit in the closure):
 services.netextender.package =
   pkgs.callPackage ./nix/package.nix { withGui = false; };
 ```
+
+## Declaring connections
+
+Profiles normally come from `nxcli connection add`, which writes them into
+`/etc/SonicWall/NetExtender/Config/profile.json`. `services.netextender.connections`
+writes that file instead:
+
+```nix
+{
+  services.netextender = {
+    connections = {
+      work = {
+        server = "vpn.example.com";
+        port = 4433;
+        username = "admin";
+        domain = "example.com";
+        protocol = "auto";        # or "sslvpn", "dtlsvpn", "wireguard"
+      };
+    };
+
+    defaultConnection = "work";   # optional with exactly one connection
+  };
+}
+```
+
+`nxcli connect work` then works on a freshly built machine with no interactive
+setup step.
+
+`server` may carry its own `:port`, which wins over `port`. The four `protocol`
+values are what the client stores on disk; `nxcli` spells the same four `Auto`,
+`TLS`, `DTLS` and `WireGuard` on its command line.
+
+### What this deliberately does not cover
+
+| `nxcli` flag | why there is no option for it |
+| --- | --- |
+| `--always-trust` | A flag on the invocation, not a property of a profile. Nothing in the client's on-disk config records it. |
+| `--force` | Only tells `nxcli connection add` to save a profile it could not validate against the appliance. Writing the file directly always "forces". |
+| `-p` / password | The client takes it at connect time and never stores it. Use SAML, or pass it to `nxcli connect -p`. |
+
+`domainType` (`saml`, and so on) is discoverable rather than declarable: the
+client works it out at first logon, and the module preserves what it found
+across rebuilds. There is an option to pin it if discovery ever goes wrong.
+
+### Authoritative, and why it is written rather than symlinked
+
+**Declared profiles are the whole set.** A profile added by hand with
+`nxcli connection add` is removed on the next rebuild. Whatever was in the file
+before this module first touched it is preserved once, at
+`profile.json.before-nixos`. Leaving `connections` at `{ }` disables profile
+management entirely.
+
+The file cannot be an `environment.etc` symlink into the store, because the
+client writes to it — on connect it records the appliance's resolved address
+and the domain type it discovered. So a oneshot unit renders it into place
+before `NEService` starts, and changing it restarts the daemon, which only
+reads the file at startup.
+
+Those two discovered fields are preserved across rebuilds rather than reset,
+but only while `server` still matches — a resolved address left over from a
+different appliance is worse than none.
+
+Driving `nxcli connection add` would have been the obvious alternative, and it
+does not work for this: it contacts the appliance to validate and prompts
+interactively when it cannot reach one, its `--force` path silently discards
+`-d domain`, `connection edit` has no `--force` at all, both need the daemon
+already running, and both renumber ids and move the `default` flag as a side
+effect.
 
 ## Trying it without a module
 
