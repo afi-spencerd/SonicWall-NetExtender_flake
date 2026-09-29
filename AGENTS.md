@@ -14,10 +14,14 @@ Upstream artifact (pinned in `nix/package.nix`):
 
 ## Scope: this repository only
 
-**Do not create, edit or delete files outside this repository without being
-asked to, in that turn.** Reading them is fine and often necessary; changing
-them is not. This holds however small or obviously-helpful the change looks,
-and it holds for a file that does not exist yet as much as for one that does.
+**Do not create, edit or delete files in another repository without being asked
+to, in that turn.** Reading them is fine and often necessary; changing them is
+not. This holds however small or obviously-helpful the change looks, and it
+holds for a file that does not exist yet as much as for one that does.
+
+The line is durability, not location. A commit in a neighbouring repo outlives
+the session and is invisible in this one's diff. A scratch file or a throwaway
+config entry you put back is neither.
 
 The pull is real, because the interesting parts of this project live on the
 other side of the flake boundary. Diagnosing anything means reading the
@@ -34,13 +38,21 @@ So:
   it stays visible.
 - **Ask first, every time.** Prior permission to touch a neighbouring repo does
   not carry into the next request, or the next turn.
-- **Mutating this machine's state counts too.** `/etc`, systemd units, the
-  client's own config files — anything outside this working tree. Running a
-  command that writes as a side effect (`nxcli connection add` edits
-  `profile.json`) is a change, even though no editor was opened. If diagnosis
-  genuinely needs one, say so first, keep it reversible, and put it back.
-- **Say what you touched.** If something outside this tree did change, name it
-  explicitly in the summary rather than leaving it to be discovered.
+- **Machine state is a different question, and mostly fine.** Recon needs it:
+  adding a throwaway `nxcli` profile to learn a schema, writing a scratch file,
+  restarting a unit, connecting the VPN to capture what it does. Do it without
+  asking, on two conditions — the change must be reversible, and you must
+  actually reverse it. Take a copy first and diff against it afterwards rather
+  than assuming the revert worked; `nxcli connection del` restoring the
+  `default` flag on the surviving profile was worth checking, not trusting.
+  Anything that outlives a reboot *and* that you cannot put back does not
+  belong in this category.
+- **Note that a command can be a change.** `nxcli connection add` edits
+  `profile.json` with no editor involved. Judge by what a command writes, not
+  by whether it looked like an edit.
+- **Say what you touched.** If anything outside this tree changed — including
+  something reverted — name it in the summary rather than leaving it to be
+  discovered.
 
 ## Tooling preferences
 
