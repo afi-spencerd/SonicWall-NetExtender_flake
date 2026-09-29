@@ -382,7 +382,9 @@ its routes (so, `0`) while NetworkManager's link routes sit at `600`:
 
 It is not a close call, and it applies to the gateway's own address too.
 
-**What actually breaks** (measured on a colliding network, 2026-09-28):
+**What actually breaks.** The table below was measured on a colliding network
+on 2026-09-28 — host on `10.57.50.0/24` with its gateway inside a pushed
+subnet. Where something was reasoned rather than observed, it says so.
 
 | | |
 | --- | --- |
@@ -401,7 +403,10 @@ That last row is the whole story. Two cases:
   or home LAN on `192.168.2.0/24`, where the appliance pushes `192.168.2.0/24`
   because that is its VPN pool. Those packets go to the corporate subnet and
   never reach the machine down the hall. This is the case that looks like *"the
-  VPN broke my Wi-Fi"*.
+  VPN broke my Wi-Fi"*. **This one was not reproduced** — testing it needs a
+  colliding foreign network to stand on. It is inferred from the same route
+  table as the case above, which was measured, plus the fact that the tunnel
+  route wins regardless of who owns the range.
 
 Ranges most likely to collide in the wild: `192.168.2.0/24` and
 `192.168.3.0/24` (stock consumer-router LANs), `10.10.10.0/24` (small-business
