@@ -75,6 +75,43 @@ let
 
   declaredSettings = settingsFormat.generate "netextender-settings.json" cfg.settings;
 
+  # NEService writes these itself, on its own first start, when setting.json is
+  # absent -- it is the daemon and not the vendor installer that seeds the file,
+  # confirmed by the directory, the file and the first log line all landing in
+  # the same second on a host that predates this module.
+  #
+  # Which is the whole problem: this module gets in first. Its unit is ordered
+  # before NEService, and it used to create setting.json holding nothing but the
+  # declared keys, so the daemon no longer found a missing file to seed and
+  # instead found a partial one -- which it does not tolerate. It panics in
+  # `init` (main_nx.go:117, nil dereference, before logging is even up) and
+  # systemd restarts it every 3s forever. That also fails every subsequent
+  # nixos-rebuild, because switch-to-configuration exits non-zero on a failed
+  # unit.
+  #
+  # So the defaults go underneath whatever is on disk: a host with a
+  # vendor-written file sees no change, and one without gets a complete file
+  # rather than a stub. Values transcribed from a vendor-written setting.json
+  # (10.3.6-39) -- recheck them when bumping the version, since nothing here
+  # derives them from the tarball.
+  vendorSettings = settingsFormat.generate "netextender-vendor-settings.json" {
+    debugOn = false;
+    mtu = 1420;
+    proxy = {
+      enabled = false;
+      server = "";
+      port = "";
+      username = "";
+      password = "";
+      bypass = "";
+    };
+    forceTls12Only = false;
+    # The vendor's own value. The module's default for
+    # `settings.disableAutoUpgrade` is `true` and merges over the top of this.
+    disableAutoUpgrade = false;
+    useBrowser = "default";
+  };
+
   # setting.json is merged rather than replaced: unlike profiles it holds values
   # that are none of this module's business (the negotiated MTU, proxy details a
   # user set through the GUI), and clobbering those to defaults on every rebuild
@@ -92,10 +129,13 @@ let
     fi
     [ -e "$live" ] || echo '{}' > "$live"
 
+    # Precedence: vendor default < what is already on disk < declared setting.
+    # The defaults only ever fill a key that is absent.
     ${lib.getExe pkgs.jq} -n \
+      --slurpfile vendor ${vendorSettings} \
       --slurpfile old "$live" \
       --slurpfile new ${declaredSettings} \
-      '($old[0] // {}) * $new[0]' > "$live.new"
+      '$vendor[0] * ($old[0] // {}) * $new[0]' > "$live.new"
 
     mv "$live.new" "$live"
     chmod 0644 "$live"
@@ -610,6 +650,7 @@ in
       # the file at startup.
       restartTriggers = [
         declaredSettings
+        vendorSettings
       ]
       ++ lib.optional (cfg.connections != { }) declaredProfiles;
 
