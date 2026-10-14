@@ -184,6 +184,16 @@ keys you do not name keep whatever they had, because this file also holds
 things a user may have set through the GUI. The original is kept once at
 `setting.json.before-nixos`.
 
+The module also seeds the vendor's own defaults underneath, so the precedence
+is **vendor default < value already on disk < declared setting**. That matters
+on a host with no prior NetExtender install. NEService writes the full file
+itself when it finds none, but this module's unit runs first — so without the
+seed it would leave behind a file containing only the declared keys, and
+NEService panics during `init` on a partial one, restarting every three
+seconds and failing every later `nixos-rebuild` with it. Seeding the defaults
+means a fresh host gets a complete file and an existing host sees no change in
+content.
+
 ```nix
 services.netextender.settings = {
   mtu = 1400;
@@ -247,7 +257,13 @@ $ nix fmt            # format with nixfmt (RFC 166)
    ```
 3. If upstream changes its WebKit ABI (`libwebkit2gtk-4.1` → newer), adjust the
    GUI `buildInputs` in the package accordingly.
-4. `nix flake check`.
+4. Re-check `vendorSettings` in [`nix/module.nix`](nix/module.nix) against a
+   `setting.json` that NEService wrote for itself. Nothing derives those
+   defaults from the tarball — they are transcribed — so a release that adds a
+   key would leave it missing on hosts with no prior install. To capture a
+   fresh one: move `setting.json` aside on a test host, restart `NEService`,
+   and read what it writes.
+5. `nix flake check`.
 
 ## Known issues
 
