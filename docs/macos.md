@@ -36,7 +36,7 @@ A Mac can still *build* `packages.netextender` through a remote builder or
 | --- | --- |
 | Our appliance's Virtual Office portal | Offers NetExtender installers for **Linux and Windows only**. Nothing for macOS on our firmware. |
 | SonicWall technical documentation and release notes | Searched for `NetExtender macOS`, `macOS`, `mac` and `pkg`. Nothing mentions a native macOS NetExtender package. |
-| MySonicWall Download Center | Says **Mobile Connect will be replaced by NetExtender on macOS**. It gives no date and does not say whether that will be a downloadable `.pkg` or another App Store app. (The VPN clients page, below, says it is a rename.) |
+| MySonicWall Download Center | Says **Mobile Connect will be replaced by NetExtender on macOS**. It gives no date and does not say whether that will be a downloadable `.pkg` or another App Store app. (The VPN clients page and the KB article, below, settle it: it is a rename of the App Store app.) |
 | Mac App Store | **SonicWall Mobile Connect** is the macOS client, and it is distributed only through the App Store. That needs an Apple Account (iCloud). We don't want to create one for the office, and we don't want staff using their personal one. |
 | Homebrew (formulae.brew.sh search for `sonicwall`) | No SonicWall casks. The results were unrelated. |
 
@@ -68,24 +68,43 @@ from the Download Center:
 
 It links to knowledge-base article
 <https://www.sonicwall.com/support/knowledge-base/kA1VN000002Fnth0AC> for
-details. We have not read that article.
+details (next section).
 
 The download URLs themselves are not in the saved HTML. The version selectors
 and store buttons are filled in by JavaScript.
+
+### "Mobile Connect is becoming NetExtender" (KB article, saved as PDF, 2026-11-11)
+
+[kA1VN000002Fnth0AC](https://www.sonicwall.com/support/knowledge-base/kA1VN000002Fnth0AC)
+describes the change as renaming "the **Mobile Connect** app to
+**NetExtender** across iOS, MacOS and Android". It calls it "a branding and
+naming change only".
+
+| Phase | Target start | What happens |
+| --- | --- | --- |
+| 1 — Informational (~6 months) | October 2026 | Notice text added to the App Store and Google Play listings. No app changes. |
+| 2 — Name change (~6 months) | April 2027 | The app is renamed to NetExtender on the App Store and Google Play. The rename arrives "through the normal app Update/Upgrade flow". |
+| 3 — Cleanup | October 2027 | Remaining "Mobile Connect" references are removed; the logo may change. |
+
+Under "Impact by product", for SonicOS customers: "NetExtender is supported on
+all Windows, Linux, iOS, Android, MacOS systems following the rename". The
+macOS part of that means the renamed App Store app.
+
+The article never mentions a `.pkg`, a `.dmg` or any distribution outside the
+app stores. Every step it describes goes through the App Store and Google Play.
 
 ## What that leaves
 
 None of these is something this flake can package. Each is listed so the
 decision can be made with the options in view:
 
-- **Wait for NetExtender on macOS.** This is probably not worth waiting for.
-  SonicWall's own page calls it "a name change only" for Mobile Connect, so the
-  expected result is the same App Store app under a new name, not a `.pkg`.
-  That is an inference from the wording. Reading the knowledge-base article
-  linked above would confirm or refute it. If a downloadable `.pkg`/`.dmg` does
-  appear, the questions that decide whether it belongs in this flake are: does
-  our appliance's Virtual Office offer it, and does it use a system extension
-  (see above)?
+- **Not "NetExtender on macOS".** Per the KB article, this is the Mobile
+  Connect App Store app renamed, delivered as an App Store update, with no
+  change in how it installs. Waiting for it gets the same App Store dependency
+  under a new name. If a downloadable `.pkg`/`.dmg` ever does appear, the
+  questions that decide whether it belongs in this flake are: does our
+  appliance's Virtual Office offer it, and does it use a system extension (see
+  above)?
 - **Not Connect Tunnel.** It is the only SonicWall client with a direct Mac
   download, but the page lists it for SMA 1000 appliances only, not for
   firewalls.
@@ -103,7 +122,7 @@ decision can be made with the options in view:
 
 - A SonicWall firmware update on the appliance. Check whether Virtual Office
   now lists a macOS download.
-- SonicWall release notes announcing NetExtender for macOS, or the VPN clients
-  page gaining a "Get NetExtender for macOS" download that is not an App Store
-  link.
+- The VPN clients page gaining a "Get NetExtender for macOS" download that is
+  not an App Store link. Nothing announced so far points that way: the rename
+  phases (April 2027, October 2027) are all App Store changes.
 - A `sonicwall` or `netextender` cask appearing in Homebrew.
