@@ -87,6 +87,8 @@ So:
   binaries).
 - `nix/module.nix` — the `services.netextender` NixOS module.
 - `README.md` — user-facing installation and usage docs.
+- `docs/macos.md` — why there is no darwin support, and where we looked for a
+  macOS client (re-check before relying on it).
 
 ## Conventions & gotchas
 

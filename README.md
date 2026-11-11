@@ -448,6 +448,9 @@ SonicWall.
 ## Notes & caveats
 
 - **`x86_64-linux` only** — SonicWall does not ship other Linux architectures.
+  There is no macOS / nix-darwin support either. See
+  [`docs/macos.md`](docs/macos.md) for why, and for where we looked for a
+  macOS client.
 - **The bundled auto-upgrader is disabled by default**
   (`services.netextender.settings.disableAutoUpgrade`), because it would try to
   install over the read-only Nix store. Upgrade by bumping the version + hash
